@@ -55,54 +55,69 @@
 
 (use 'clojure.pprint)
 
-(def all-posts (let [conn (SqlConnection. "Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=CommunityServer;Data Source=.")
-                 _ (.Open conn)]
-             (select conn "select * from dbo.cs_Posts")))
+(def all-posts
+  (let [conn (SqlConnection. "Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=CommunityServer;Data Source=.")
+        _ (.Open conn)]
+    (select conn "select PostID, ParentID, Body, IsApproved, PostAuthor, PostType, PostName, PostDate, Subject, PostLevel from dbo.cs_Posts")))
 
-(def threads (let [conn (SqlConnection. "Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=CommunityServer;Data Source=.")
-                 _ (.Open conn)]
-             (select conn "select * from dbo.cs_Threads")))
+(comment (def threads (let [conn (SqlConnection. "Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=CommunityServer;Data Source=.")
+                    _ (.Open conn)]
+                (select conn "select * from dbo.cs_Threads"))))
 
 
-(def posts (group-by #(get % "ParentID") all-posts))
+(defn approved?
+  "Return true if the post has been approved."
+  [post]
+  (get post "IsApproved"))
 
-(def toplevel-posts (filter #(= (get % "PostID") (get % "ParentID")) all-posts))
+(defn post-id
+  "Return the id of this post."
+  [post]
+  (get post "PostID"))
+
+(defn post-parent
+  "Return the ID of the parent of this post."
+  [post]
+  (get post "ParentID"))
+
+(defn post-author
+  "Return the author of this post"
+  [post]
+  (get post "PostAuthor"))
+
+(defn post-title
+  "Return the title of this post"
+  [post]
+  (get post "Subject"))
+
+(defn toplevel?
+  "Return true if this post is top level (i.e. it is its own parent)."
+  [post]
+  (= (post-id post) (post-parent post)))
+
+(defn comment?
+  "Return true if this post is a comment."
+  [post]
+  (not (toplevel? post)))
+
+(def posts (filter approved? all-posts))
+
+(def toplevel-posts (filter toplevel? posts))
 
 (defn comments
   "Given the list of all posts, return a seq of the posts that are
-  comments on a particular post."
+  comments on that particular post."
   [all-posts post]
-  )
+  (let [id (post-id post)]
+    (filter #(and (not (toplevel? %))
+                  (= id (post-parent %)))
+            all-posts)))
 
 (def posts-with-comments
-  (map #() (filter (fn [p] ((get p "ParentID"))) toplevel-posts)))
+  (map #(assoc % :comments (comments posts %)) toplevel-posts))
 
-(comment (binding [*print-level* 3] (pprint posts)))
-
-(def authors (distinct (map #(get % "PostAuthor") threads)))
-
-(def threads-by-author (group-by #(get % "PostAuthor") threads))
-
-(defn posts-for-thread
-  "Filter a seq of posts for a given thread."
-  [posts thread]
-  (filter #(= (get thread "ThreadID") (get % "ThreadID")) posts))
-
-(comment (->> (threads-by-author "craig-andera")
-              (take 3)
-              (posts-for-thread posts)
-              (take 5)
-              pprint
-              ))
-
-(def threads-with-posts
-  (map #(assoc % :posts (posts-for-thread posts %)) threads))
-
-;; (binding [*print-length* 10] (pprint (take 1 threads-with-posts)))
-
-;; ((first threads-with-posts) "PostAuthor")
-
-;; (pprint (threads-by-author "craig-andera"))
+(def content-by-author
+  (group-by post-author posts-with-comments))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -110,36 +125,64 @@
 (import '[System.Xml XmlTextWriter Formatting XmlConvert])
 (import 'System.DateTime)
 
-;; (def writer (XmlTextWriter. "C:\\temp\\test.atom" nil))
-
-;; (.set_Formatting writer Formatting/Indented)
-
-;; (.WriteElementString writer "test" "foo")
-
-;; (.Close writer)
-
 (def atom-ns "http://www.w3.org/2005/Atom")
 
 ;; Comments have postlevel = 2 and ParentID != PostID
 
+(defn write-entry
+  "Write a Atom <entry>s to the XmlWriter."
+  [writer id time title body author comments]
+  (doto writer
+    (.WriteStartElement "entry" atom-ns)
+    (.WriteElementString "id" atom-ns id)
+    (.WriteElementString "published" atom-ns (XmlConvert/ToString time))
+    (.WriteElementString "updated" atom-ns (XmlConvert/ToString time))
+
+    (.WriteStartElement "category" atom-ns)
+    (.WriteAttributeString "scheme" "http://schemas.google.com/g/2005#kind")
+    (.WriteAttributeString "term"
+                           (if (toplevel? post)
+                             "http://schemas.google.com/blogger/2008/kind#post"
+                             "http://schemas.google.com/blogger/2008/kind#comment"))
+    (.WriteEndElement)
+
+    (.WriteStartElement "title" atom-ns)
+    (.WriteAttributeString "type" "text")
+    (.WriteValue (post-title post))
+    (.WriteElement)
+
+    (.WriteStartElement "content" atom-ns)
+    (.WriteAttributeString "type" "html")
+    (.WriteValue (post-body post))
+    (.WriteEndElement)
+
+    (.WriteStartElement "author" atom-ns)
+    (.WriteElementString "name" atom-ns author)
+    (.WriteEndElement))
+  (if comments
+    (throw (Exception. "Here's where I was.")))
+  )
+
 (defn write-post-entry
-  "Given a thread (with posts) write the entries for it to the XmlWriter."
-  [writer thread]
+  "Given a post (with comments) write the entries for it to the XmlWriter."
+  [writer post]
   (write-entry writer
-               (thread "ThreadID")      ; id
-               (thread "PostDate")      ; published & updated
-               (thread "ThreadDate")    ; title
-               ))
+               (post-id post)
+               (post-time post)
+               (post-title post)
+               (post-body post)
+               (post-author post)
+               (:comments post)))
 
 (defn write-post-entries
-  "Given a seq of threads (with posts), write the entries for them to
+  "Given a seq of posts (with comments), write the entries for them to
   the XmlWriter."
-  [writer threads]
-  (doall (map (partial write-post-entry writer) threads)))
+  [writer posts]
+  (doseq [post posts] (write-post-entry writer post)))
 
 (defn write-feed
   "Spit out an Atom feed file with the specified name, given the threads."
-  [path threads]
+  [path posts]
   (doto (XmlTextWriter. path nil)
     (.set_Formatting Formatting/Indented)
     (.WriteStartElement "feed" atom-ns)
@@ -167,9 +210,5 @@
 
 (comment (write-feed "C:\\temp\\test3.atom" threads))
 
-(def some-threaded-posts
-  (let [some-threads (->> (threads-by-author "craig-andera")
-                          (take 3))]
-    (map #(assoc % :posts (take 3 (posts-for-thread posts %))) some-threads)))
 
-(pprint some-threaded-posts)
+
