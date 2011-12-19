@@ -90,6 +90,16 @@
   [post]
   (get post "Subject"))
 
+(defn post-time
+  "Return the publication time of a post"
+  [post]
+  (get post "PostDate"))
+
+(defn post-body
+  "Return the body of a post"
+  [post]
+  (get post "PostBody"))
+
 (defn toplevel?
   "Return true if this post is top level (i.e. it is its own parent)."
   [post]
@@ -126,12 +136,19 @@
 (import 'System.DateTime)
 
 (def atom-ns "http://www.w3.org/2005/Atom")
+(def thread-ns "http://purl.org/syndication/thread/1.0")
 
 ;; Comments have postlevel = 2 and ParentID != PostID
 
-(defn write-entry
-  "Write a Atom <entry>s to the XmlWriter."
-  [writer id time title body author comments]
+(defn write-post-entry
+  "Given a post or comment write the entries for it to the XmlWriter."
+  [writer post]
+  (let [id (post-id post)
+        time (post-time post)
+        title (post-title post)
+        body (post-body post)
+        author (post-author post)
+        comments (:comments post)]
   (doto writer
     (.WriteStartElement "entry" atom-ns)
     (.WriteElementString "id" atom-ns id)
@@ -158,21 +175,14 @@
 
     (.WriteStartElement "author" atom-ns)
     (.WriteElementString "name" atom-ns author)
-    (.WriteEndElement))
-  (if comments
-    (throw (Exception. "Here's where I was.")))
-  )
+    (.WriteEndElement)
 
-(defn write-post-entry
-  "Given a post (with comments) write the entries for it to the XmlWriter."
-  [writer post]
-  (write-entry writer
-               (post-id post)
-               (post-time post)
-               (post-title post)
-               (post-body post)
-               (post-author post)
-               (:comments post)))
+    (.WriteElementString "total" thread-ns (count comments))
+
+    (.WriteEndElement))
+
+  (doseq [comment comments]
+    (write-post-entry writer comment))))
 
 (defn write-post-entries
   "Given a seq of posts (with comments), write the entries for them to
@@ -181,34 +191,33 @@
   (doseq [post posts] (write-post-entry writer post)))
 
 (defn write-feed
-  "Spit out an Atom feed file with the specified name, given the threads."
+  "Spit out an Atom feed file with the specified name, given the posts."
   [path posts]
-  (doto (XmlTextWriter. path nil)
-    (.set_Formatting Formatting/Indented)
-    (.WriteStartElement "feed" atom-ns)
-    (.WriteElementString "id" atom-ns "feed-id")
-    (.WriteElementString "updated" atom-ns (XmlConvert/ToString (DateTime/Now)))
+  (let [writer (XmlTextWriter. path nil)]
+    (try
+      (doto writer
+        (.set_Formatting Formatting/Indented)
+        (.WriteStartElement "feed" atom-ns)
+        (.WriteElementString "id" atom-ns "feed-id")
+        (.WriteElementString "updated" atom-ns (XmlConvert/ToString (DateTime/Now)))
 
-    (.WriteStartElement "title" atom-ns)
-    (.WriteAttributeString "type" "text")
-    (.WriteValue "Blog Title Here")
-    (.WriteEndElement)
+        (.WriteStartElement "title" atom-ns)
+        (.WriteAttributeString "type" "text")
+        (.WriteValue "Blog Title Here")
+        (.WriteEndElement)
 
-    (.WriteStartElement "generator" atom-ns)
-    (.WriteAttributeString "version" "7.00")
-    (.WriteAttributeString "uri" "http://www.blogger.com")
-    (.WriteValue "Blogger")
-    (.WriteEndElement)
+        (.WriteStartElement "generator" atom-ns)
+        (.WriteAttributeString "version" "7.00")
+        (.WriteAttributeString "uri" "http://www.blogger.com")
+        (.WriteValue "Blogger")
+        (.WriteEndElement)
 
-    (write-post-entries threads)
+        (write-post-entries posts)
+        )
+      (finally
+       (.Close writer)))))
 
-    (.WriteStartElement "entry" atom-ns)
-    (.WriteValue "TODO")
-    (.WriteEndElement)
-
-    (.Close)))
-
-(comment (write-feed "C:\\temp\\test3.atom" threads))
+(write-feed "C:\\temp\\craig-andera-2.atom" (content-by-author "craig-andera"))
 
 
 
