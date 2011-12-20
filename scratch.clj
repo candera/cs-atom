@@ -98,7 +98,7 @@
 (defn post-body
   "Return the body of a post"
   [post]
-  (get post "PostBody"))
+  (get post "Body"))
 
 (defn toplevel?
   "Return true if this post is top level (i.e. it is its own parent)."
@@ -151,7 +151,7 @@
         comments (:comments post)]
   (doto writer
     (.WriteStartElement "entry" atom-ns)
-    (.WriteElementString "id" atom-ns id)
+    (.WriteElementString "id" atom-ns (str id))
     (.WriteElementString "published" atom-ns (XmlConvert/ToString time))
     (.WriteElementString "updated" atom-ns (XmlConvert/ToString time))
 
@@ -166,7 +166,7 @@
     (.WriteStartElement "title" atom-ns)
     (.WriteAttributeString "type" "text")
     (.WriteValue (post-title post))
-    (.WriteElement)
+    (.WriteEndElement)
 
     (.WriteStartElement "content" atom-ns)
     (.WriteAttributeString "type" "html")
@@ -175,13 +175,20 @@
 
     (.WriteStartElement "author" atom-ns)
     (.WriteElementString "name" atom-ns author)
-    (.WriteEndElement)
-
-    (.WriteElementString "total" thread-ns (count comments))
-
     (.WriteEndElement))
 
-  (doseq [comment comments]
+  (when (and (pos? (count comments))
+             (toplevel? post))
+    (.WriteElementString writer "total" thread-ns (str (count comments))))
+
+  #_(when (not (toplevel? post))
+    (.WriteStartElement writer "in-reply-to" thread-ns)
+    (.WriteAttributeString writer "ref" (str (post-parent post)))
+    (.WriteEndElement writer))
+
+  (.WriteEndElement writer)             ; </entry>
+
+  #_(doseq [comment comments]
     (write-post-entry writer comment))))
 
 (defn write-post-entries
@@ -217,7 +224,7 @@
       (finally
        (.Close writer)))))
 
-(write-feed "C:\\temp\\craig-andera-2.atom" (content-by-author "craig-andera"))
+(write-feed "C:\\temp\\craig-andera-3.atom" (content-by-author "craig-andera"))
 
 
 
