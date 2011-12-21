@@ -1,25 +1,5 @@
 (System.Reflection.Assembly/LoadWithPartialName "System.Data")
 (import '[System.Data.SqlClient SqlConnection SqlCommand])
-;; (def conn (SqlConnection. "Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=CommunityServer;Data Source=."))
-
-;; (.Open conn)
-
-;; (def cmd (.CreateCommand conn))
-
-;; (.set_CommandText cmd "select * from dbo.cs_Posts")
-
-;; (def reader  (.ExecuteReader cmd))
-
-;; (.Read reader)
-
-;; (.get_FieldCount reader)
-
-;; (.GetValue reader 2)
-;; (.GetName reader 2)
-
-;; (.Close reader)
-
-;; (doc range)
 
 (defn row
   "Given a SqlReader, produce a sequence of all the values in the
@@ -58,7 +38,7 @@
 (def all-posts
   (let [conn (SqlConnection. "Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=CommunityServer;Data Source=.")
         _ (.Open conn)]
-    (select conn "select PostID, ParentID, Body, IsApproved, PostAuthor, PostType, PostName, PostDate, Subject, PostLevel from dbo.cs_Posts")))
+    (select conn "select PostID, ParentID, Body, FormattedBody, IsApproved, PostAuthor, PostType, PostName, PostDate, Subject, PostLevel from dbo.cs_Posts")))
 
 (comment (def threads (let [conn (SqlConnection. "Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=CommunityServer;Data Source=.")
                     _ (.Open conn)]
@@ -132,13 +112,18 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (System.Reflection.Assembly/LoadWithPartialName "System.Xml")
-(import '[System.Xml XmlTextWriter Formatting XmlConvert])
+(import '[System.Xml XmlTextWriter Formatting XmlConvert XmlDateTimeSerializationMode])
 (import 'System.DateTime)
 
 (def atom-ns "http://www.w3.org/2005/Atom")
 (def thread-ns "http://purl.org/syndication/thread/1.0")
 
 ;; Comments have postlevel = 2 and ParentID != PostID
+
+(defn xml-date-string
+  "Convert a DateTime to an Atom-compatible string."
+  [date]
+  (XmlConvert/ToString date XmlDateTimeSerializationMode/Utc))
 
 (defn write-post-entry
   "Given a post or comment write the entries for it to the XmlWriter."
@@ -152,8 +137,8 @@
   (doto writer
     (.WriteStartElement "entry" atom-ns)
     (.WriteElementString "id" atom-ns (str id))
-    (.WriteElementString "published" atom-ns (XmlConvert/ToString time))
-    (.WriteElementString "updated" atom-ns (XmlConvert/ToString time))
+    (.WriteElementString "published" atom-ns (xml-date-string time))
+    (.WriteElementString "updated" atom-ns (xml-date-string time))
 
     (.WriteStartElement "category" atom-ns)
     (.WriteAttributeString "scheme" "http://schemas.google.com/g/2005#kind")
@@ -181,21 +166,16 @@
              (toplevel? post))
     (.WriteElementString writer "total" thread-ns (str (count comments))))
 
-  #_(when (not (toplevel? post))
+  (when (not (toplevel? post))
     (.WriteStartElement writer "in-reply-to" thread-ns)
     (.WriteAttributeString writer "ref" (str (post-parent post)))
     (.WriteEndElement writer))
 
   (.WriteEndElement writer)             ; </entry>
 
-  #_(doseq [comment comments]
+  (doseq [comment comments]
     (write-post-entry writer comment))))
 
-(defn write-post-entries
-  "Given a seq of posts (with comments), write the entries for them to
-  the XmlWriter."
-  [writer posts]
-  (doseq [post posts] (write-post-entry writer post)))
 
 (defn write-feed
   "Spit out an Atom feed file with the specified name, given the posts."
@@ -206,7 +186,7 @@
         (.set_Formatting Formatting/Indented)
         (.WriteStartElement "feed" atom-ns)
         (.WriteElementString "id" atom-ns "feed-id")
-        (.WriteElementString "updated" atom-ns (XmlConvert/ToString (DateTime/Now)))
+        (.WriteElementString "updated" atom-ns (xml-date-string (DateTime/Now)))
 
         (.WriteStartElement "title" atom-ns)
         (.WriteAttributeString "type" "text")
@@ -217,14 +197,17 @@
         (.WriteAttributeString "version" "7.00")
         (.WriteAttributeString "uri" "http://www.blogger.com")
         (.WriteValue "Blogger")
-        (.WriteEndElement)
+        (.WriteEndElement))
 
-        (write-post-entries posts)
-        )
+      (doseq [post posts] (write-post-entry writer post))
+
       (finally
        (.Close writer)))))
 
-(write-feed "C:\\temp\\craig-andera-3.atom" (content-by-author "craig-andera"))
+(def test-content
+  (->> (content-by-author "craig-andera")
+       (filter #(seq (:comments %)))
+       (take 3)
+       (map #(assoc % :comments (take 3 (:comments %))))))
 
-
-
+(write-feed "C:\\temp\\craig-andera-3.atom" test-content)
