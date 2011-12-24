@@ -1,18 +1,106 @@
-;; TODO: This bit is currently written against the .NET APIs. Rewrite
-;; it to use Java XML writing
-(System.Reflection.Assembly/LoadWithPartialName "System.Xml")
-(import '[System.Xml XmlTextWriter Formatting XmlConvert XmlDateTimeSerializationMode])
-(import 'System.DateTime)
+;; Read in the data that go written out by the .NET export
+(import 'java.io.PushbackReader)
+(use 'clojure.java.io)
+(def all-posts
+  (let [source (PushbackReader. (reader "raw-data.clj"))]
+    (loop [posts []]
+      (let [post (read source false :done)]
+        (if (= post :done)
+          posts
+          (recur
+           (if (post "IsApproved")
+             (conj posts post)
+             posts)))))))
+
+;; Helper functions for working with posts
+(defn approved?
+  "Return true if the post has been approved."
+  [post]
+  (get post "IsApproved"))
+
+(defn post-id
+  "Return the id of this post."
+  [post]
+  (get post "PostID"))
+
+(defn post-parent
+  "Return the ID of the parent of this post."
+  [post]
+  (get post "ParentID"))
+
+(defn post-author
+  "Return the author of this post"
+  [post]
+  (get post "PostAuthor"))
+
+(defn post-title
+  "Return the title of this post"
+  [post]
+  (get post "Subject"))
+
+(defn post-time
+  "Return the publication time of a post"
+  [post]
+  (get post "PostDate"))
+
+(defn post-body
+  "Return the body of a post"
+  [post]
+  (get post "Body"))
+
+(defn toplevel?
+  "Return true if this post is top level (i.e. it is its own parent)."
+  [post]
+  (= (post-id post) (post-parent post)))
+
+(defn comment?
+  "Return true if this post is a comment."
+  [post]
+  (not (toplevel? post)))
+
+(def posts all-posts)
+
+(def toplevel-posts (filter toplevel? posts))
+
+(defn comments
+  "Given the list of all posts, return a seq of the posts that are
+  comments on that particular post."
+  [all-posts post]
+  (let [id (post-id post)]
+    (filter #(and (not (toplevel? %))
+                  (= id (post-parent %)))
+            all-posts)))
+
+(def posts-with-comments
+  (map #(assoc % :comments (comments posts %)) toplevel-posts))
+
+(def content-by-author
+  (group-by post-author posts-with-comments))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Functions for writing out the Atom feed
 
 (def atom-ns "http://www.w3.org/2005/Atom")
 (def thread-ns "http://purl.org/syndication/thread/1.0")
 
 ;; Comments have postlevel = 2 and ParentID != PostID
+(import 'java.text.SimpleDateFormat)
+(def input-date-format (SimpleDateFormat. "MM/dd/yyyy HH:mm:ss"))
+(def output-date-format (SimpleDateFormat. "yyyy-MM-dd'T'HH:mm:ss.SZ"))
 
 (defn xml-date-string
-  "Convert a DateTime to an Atom-compatible string."
-  [date]
-  (XmlConvert/ToString date XmlDateTimeSerializationMode/Utc))
+  "Convert a 12/23/2011 12:34:56 time string to an Atom-compatible string."
+  [d]
+  (.format output-date-format (.parse input-date-format d)))
+
+(defn write-element-string
+  "Writes an element with the specified name, namespace, and content
+  to the writer."
+  [writer ns name content]
+  (.writeStartElement writer ns name)
+  (.writeCharacters writer content)
+  (.writeEndElement writer))
 
 (defn write-post-entry
   "Given a post or comment write the entries for it to the XmlWriter."
@@ -24,74 +112,86 @@
         author (post-author post)
         comments (:comments post)]
   (doto writer
-    (.WriteStartElement "entry" atom-ns)
-    (.WriteElementString "id" atom-ns (str id))
-    (.WriteElementString "published" atom-ns (xml-date-string time))
-    (.WriteElementString "updated" atom-ns (xml-date-string time))
+    (.writeStartElement atom-ns "entry")
+    (write-element-string atom-ns "id" (str id))
+    (write-element-string atom-ns "published" (xml-date-string time))
+    (write-element-string atom-ns "updated" (xml-date-string time))
 
-    (.WriteStartElement "category" atom-ns)
-    (.WriteAttributeString "scheme" "http://schemas.google.com/g/2005#kind")
-    (.WriteAttributeString "term"
+    (.writeStartElement atom-ns "category")
+    (.writeAttribute "scheme" "http://schemas.google.com/g/2005#kind")
+    (.writeAttribute "term"
                            (if (toplevel? post)
                              "http://schemas.google.com/blogger/2008/kind#post"
                              "http://schemas.google.com/blogger/2008/kind#comment"))
-    (.WriteEndElement)
+    (.writeEndElement)
 
-    (.WriteStartElement "title" atom-ns)
-    (.WriteAttributeString "type" "text")
-    (.WriteValue (post-title post))
-    (.WriteEndElement)
+    (.writeStartElement atom-ns "title")
+    (.writeAttribute "type" "text")
+    (.writeCharacters (post-title post))
+    (.writeEndElement)
 
-    (.WriteStartElement "content" atom-ns)
-    (.WriteAttributeString "type" "html")
-    (.WriteValue (post-body post))
-    (.WriteEndElement)
+    (.writeStartElement atom-ns "content")
+    (.writeAttribute "type" "html")
+    (.writeCharacters (post-body post))
+    (.writeEndElement)
 
-    (.WriteStartElement "author" atom-ns)
-    (.WriteElementString "name" atom-ns author)
-    (.WriteEndElement))
+    (.writeStartElement atom-ns "author")
+    (write-element-string atom-ns "name" author)
+    (.writeEndElement))
 
   (when (and (pos? (count comments))
              (toplevel? post))
-    (.WriteElementString writer "total" thread-ns (str (count comments))))
+    (write-element-string writer thread-ns "total" (str (count comments))))
 
   (when (not (toplevel? post))
-    (.WriteStartElement writer "in-reply-to" thread-ns)
-    (.WriteAttributeString writer "ref" (str (post-parent post)))
-    (.WriteEndElement writer))
+    (.writeStartElement writer thread-ns "in-reply-to")
+    (.writeAttribute writer "ref" (str (post-parent post)))
+    (.writeEndElement writer))
 
-  (.WriteEndElement writer)             ; </entry>
+  (.writeEndElement writer)             ; </entry>
 
   (doseq [comment comments]
     (write-post-entry writer comment))))
+
+(use 'clojure.java.io)
+(import 'javax.xml.stream.XMLOutputFactory)
+(import 'java.util.Date)
 
 
 (defn write-feed
   "Spit out an Atom feed file with the specified name, given the posts."
   [path posts]
-  (let [writer (XmlTextWriter. path nil)]
+  (let [factory (XMLOutputFactory/newInstance)
+        _ (.setProperty factory "javax.xml.stream.isRepairingNamespaces" true)
+        writer (.createXMLStreamWriter factory (writer path))]
     (try
       (doto writer
-        (.set_Formatting Formatting/Indented)
-        (.WriteStartElement "feed" atom-ns)
-        (.WriteElementString "id" atom-ns "feed-id")
-        (.WriteElementString "updated" atom-ns (xml-date-string (DateTime/Now)))
+        (.writeComment "-*- mode: xml -*-")
+        (.writeComment "Generated by a crappy script that Craig Andera wrote")
+        (.setDefaultNamespace atom-ns)
+        (.setPrefix "thr" thread-ns)
+        (.writeStartElement atom-ns "feed")
+        (write-element-string atom-ns "id" "feed-id")
+        (write-element-string atom-ns "updated" (.format output-date-format (Date.)))
 
-        (.WriteStartElement "title" atom-ns)
-        (.WriteAttributeString "type" "text")
-        (.WriteValue "Blog Title Here")
-        (.WriteEndElement)
+        (.writeStartElement atom-ns "title")
+        (.writeAttribute "type" "text")
+        (.writeCharacters "Blog Title Here")
+        (.writeEndElement)
 
-        (.WriteStartElement "generator" atom-ns)
-        (.WriteAttributeString "version" "7.00")
-        (.WriteAttributeString "uri" "http://www.blogger.com")
-        (.WriteValue "Blogger")
-        (.WriteEndElement))
+        (.writeStartElement atom-ns "generator")
+        (.writeAttribute "version" "7.00")
+        (.writeAttribute "uri" "http://www.blogger.com")
+        (.writeCharacters "Blogger")
+        (.writeEndElement))
 
       (doseq [post posts] (write-post-entry writer post))
 
+      (.writeEndElement writer)
+
       (finally
-       (.Close writer)))))
+       (.flush writer)
+       (.close writer)))))
 
 (def test-content
   (->> (content-by-author "craig-andera")
@@ -99,4 +199,4 @@
        (take 3)
        (map #(assoc % :comments (take 3 (:comments %))))))
 
-(write-feed "C:\\temp\\craig-andera-3.atom" test-content)
+(write-feed "/tmp/craig-andera-3.atom" test-content)
