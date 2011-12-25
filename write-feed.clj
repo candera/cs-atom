@@ -75,7 +75,7 @@
   (let [nodes (html-resource (StringReader. dirty))
         nodes (remove-blank-p-tags nodes)]
     (apply str
-           (emit* (if-let [body (select nodes [:html :body content])]
+           (emit* (if-let [body (select nodes [:html :> :body :> content])]
                     body
                     nodes)))))
 
@@ -221,4 +221,13 @@
        (take 3)
        (map #(assoc % :comments (take 3 (:comments %))))))
 
-(write-feed "/tmp/craig-andera-3.atom" test-content)
+#_(with-open [writer (writer "/tmp/author-key.txt")]
+ (doseq [author (keys content-by-author)]
+   (.write writer "\n\n")
+   (.write writer (str "Author: " author))
+   (.write writer "\n")
+   (doseq [post (content-by-author author)]
+     (.write writer (format "%3d - %s\n" (count (:comments post)) (post-title post))))))
+
+(doseq [[author content] content-by-author]
+  (write-feed (str "/tmp/" author ".atom") content))
